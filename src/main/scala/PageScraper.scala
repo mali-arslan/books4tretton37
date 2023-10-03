@@ -1,16 +1,21 @@
 
 import Exceptions.FetchingException
-import JsoupWrappers.{DocumentFetcher, JsoupFetcher}
+import JsoupWrappers.{JsoupFetcher, PageFetcher}
+import org.jsoup.nodes.Document
 
-import java.io.{File, FileWriter}
-import java.nio.file.{Files, Paths}
+import java.nio.file.{Files, Paths, StandardOpenOption}
 import scala.jdk.CollectionConverters.ListHasAsScala
 
+/**
+ *
+ * @param baseUrl Root url to scrape from
+ * @param outputPath root directory to save to
+ */
 class PageScraper(baseUrl: String, outputPath: String) {
-  val domain = baseUrl.stripPrefix("http://").stripPrefix("https://").split('/')(0)
+  val domain = stripProtocol(baseUrl).split('/')(0)
   val baseURI = new java.net.URI(baseUrl)
 
-  def scrape(logger: Logger = ConsoleLogger, fetcher: DocumentFetcher = JsoupFetcher): Unit = {
+  def scrape(logger: Logger = ConsoleLogger, fetcher: PageFetcher[Document] = JsoupFetcher): Unit = {
     val visitedUrls = collection.mutable.Set.empty[String]
 
     def alreadyVisited(url: String): Boolean = {
@@ -23,7 +28,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
       visitedUrls += url
       val document =
         try {
-          fetcher.fetch(url)
+          fetcher.fetchDocument(url)
         }
         catch {
           case e =>
@@ -32,6 +37,40 @@ class PageScraper(baseUrl: String, outputPath: String) {
         }
       val outerHtml = document.outerHtml()
       saveHtmlContent(url, outerHtml)
+
+      // Extract and download textbased resources
+
+      val textExtensions = List(".css", ".js", ".json", ".xml", ".svg", ".rss", ".atom", ".csv", ".txt", ".log")
+      val textResourceSelector = textExtensions.map(ext => s"[href$$=$ext], [src$$=$ext]").mkString(",")
+      val textResources = document.select(textResourceSelector)
+        .asScala
+        .flatMap(el =>
+          List(el.attr("abs:href"), el.attr("abs:src"))
+        )
+        .distinct
+        .filter(r => r.nonEmpty && withinDomain(r))
+
+      textResources.foreach { resourceUrl =>
+        val resourceContent = fetcher.fetchDocument(url, true).outerHtml()
+        if (resourceContent.nonEmpty)
+          saveTextResource(resourceUrl, resourceContent)
+      }
+
+      // Extract and download binary resources
+      val binaryResources = document.select("[href], [src]").asScala.flatMap(el =>
+        List(el.attr("abs:href"), el.attr("abs:src"))
+      ).distinct
+        .filter(r =>
+          r.nonEmpty && !r.endsWith(".html") &&
+            withinDomain(r)
+        ).filterNot(textResources.contains)
+
+      binaryResources.foreach { resourceUrl =>
+        val resourceContent = fetcher.fetchBytes(resourceUrl)
+        if (resourceContent.nonEmpty)
+          saveBinaryResource(resourceUrl, resourceContent)
+      }
+
       val links = document.select(s"a[href]").asScala.map(_.attr("abs:href")).distinct
       links.filterNot(alreadyVisited).filter(withinDomain).foreach { link =>
         _scrape(link)
@@ -42,28 +81,45 @@ class PageScraper(baseUrl: String, outputPath: String) {
 
   }
 
+  def saveBinaryResource(url: String, content: Array[Byte]): Unit = {
+    val path = Paths.get(getLocalPathResource(url))
+    Files.createDirectories(path.getParent)
+    Files.write(path, content, StandardOpenOption.CREATE)
+  }
+
   private def withinDomain(url: String): Boolean = {
-    new java.net.URL(url).getHost == baseURI.getHost
+    url.startsWith("./") || url.startsWith("/") || new java.net.URL(url).getHost == baseURI.getHost
+  }
+
+  private def saveTextResource(url: String, content: String): Unit = {
+    // add index.html to paths that do not end in .html
+    val path = Paths.get(getLocalPathResource(url))
+    Files.createDirectories(path.getParent)
+    Files.write(path, content.getBytes, StandardOpenOption.CREATE)
   }
 
   private def saveHtmlContent(url: String, content: String): Unit = {
     // add index.html to paths that do not end in .html
-    val path = Paths.get(getLocalPath(url))
+    val path = Paths.get(getLocalPathHtml(url))
     Files.createDirectories(path.getParent)
-    val fw = new FileWriter(new File(path.toString))
-    fw.write(content)
-    fw.close()
+    Files.write(path, content.getBytes, StandardOpenOption.CREATE)
   }
 
-  private def getLocalPath(url: String): String = {
-    val domainPath = Paths.get(outputPath).resolve(
-      domain.replaceAll("[^a-zA-Z0-9.-/]", "_")
-    )
-    val urlPath = domainPath.resolve(
-      baseURI.relativize(new java.net.URI(url)).getPath).toString
+  private def getLocalPathHtml(absoluteUrl: String): String = {
+    val path = Paths.get(outputPath).resolve(cleanPath(stripProtocol(absoluteUrl))).toString
+    if (path.endsWith(".html")) path else path + "/index.html"
+  }
 
-    if (urlPath.endsWith(".html")) urlPath else urlPath + "/index.html"
+  private def stripProtocol(url: String) = {
+    url.stripPrefix("http://").stripPrefix("https://")
+  }
 
+  private def cleanPath(path: String) = {
+    path.replaceAll("[^a-zA-Z0-9.-/]", "_")
+  }
+
+  private def getLocalPathResource(absoluteUrl: String): String = {
+    Paths.get(outputPath).resolve(cleanPath(stripProtocol(absoluteUrl))).toString
   }
 }
 
