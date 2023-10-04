@@ -5,10 +5,9 @@ import org.jsoup.nodes.Document
 
 import java.nio.file.{Files, Paths, StandardOpenOption}
 import scala.collection.parallel.CollectionConverters.{ImmutableIterableIsParallelizable, IterableIsParallelizable}
-import scala.concurrent.duration.{Duration, MILLISECONDS, MINUTES}
-import scala.concurrent.{Await, ExecutionContext, Future}
-import scala.jdk.CollectionConverters.{CollectionHasAsScala, ListHasAsScala, MapHasAsJava}
-import scala.util.{Failure, Success}
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration.{Duration, MILLISECONDS}
+import scala.jdk.CollectionConverters.{CollectionHasAsScala, ListHasAsScala}
 
 /**
  *
@@ -32,6 +31,14 @@ class PageScraper(baseUrl: String, outputPath: String) {
     }
 
     // recursive closure
+
+    def _scrapeWithErrorTracking(url: String): Unit = {
+      try
+        _scrape(url)
+      catch {
+        case e => failures.add(url -> e)
+      }
+    }
 
     def _scrape(url: String): Unit = {
       logger.log(s"Processing $url")
@@ -89,14 +96,20 @@ class PageScraper(baseUrl: String, outputPath: String) {
 
       visitedUrls.addAll(links.map(_ -> ()))
       println(s"Scraping complete for $url. Continuing with its links")
-      links.par.foreach(_scrape)
+      links.par.foreach(_scrapeWithErrorTracking)
 
     }
+
     def now = System.currentTimeMillis()
+
     val start = now
-    _scrape(baseUrl)
-    println(visitedUrls.size)
-    println(Duration(now - start, MILLISECONDS).toSeconds)
+    _scrapeWithErrorTracking(baseUrl)
+    logger.log(s"Number of links scraped: ${visitedUrls.size}")
+    logger.log(s"Time spent: ${Duration(now - start, MILLISECONDS).toSeconds}")
+    logger.log("List of scraping failures with reasons:")
+    failures.asScala.foreach {
+      case (u, t) => logger.log(s"$u - ${t.getMessage}")
+    }
   }
 
   def saveBinaryResource(url: String, content: Array[Byte]): Unit = {

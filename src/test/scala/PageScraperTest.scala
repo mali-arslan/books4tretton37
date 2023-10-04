@@ -1,25 +1,23 @@
 
 import Exceptions.FetchingException
-import JsoupWrappers.{PageFetcher, JsoupFetcher}
+import JsoupWrappers.{JsoupFetcher, PageFetcher}
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import java.io.File
 import java.nio.file.{Files, Paths}
 import scala.collection.mutable
 import scala.io.Source
 import scala.jdk.CollectionConverters.{IteratorHasAsScala, ListHasAsScala}
-import scala.reflect.io.Directory
 
 
 class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach {
   val target = "http://books.toscrape.com"
   val domain = "books.toscrape.com"
   override def beforeEach(): Unit = {
-    new Directory(new File("tmp")).deleteRecursively()
+//    new Directory(new File("tmp")).deleteRecursively()
     super.beforeEach()
   }
 
@@ -138,8 +136,12 @@ class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     filesCreated.count(_.toString.endsWith(scriptRelativePath)) shouldBe 1
   }
 
-  it should "scrape it all" in {
+  it should "successfully scrape all books" in {
     PageScraper().scrape(ConsoleLogger,JsoupFetcher)
+    filesCreated.map(_.toString)
+      .filterNot(path => path.contains("category/") || path.contains("page-"))
+      .filter(_.contains("catalogue"))
+      .count(_.endsWith(".html")) shouldBe 1000
   }
 
   def filesCreated = Files.walk(Paths.get("tmp/").resolve(domain))
