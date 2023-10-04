@@ -102,7 +102,6 @@ class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
 
   it should "save the start page's html and the related files" in {
 
-
     val html = Source.fromResource("books_to_scrape_index.html").getLines().mkString
     val imageRelativePath = "/media/cache/2c/da/2cdad67c44b002e7ead0cc35693c0e8b.jpg"
     val imageUrl = s"$target$imageRelativePath"

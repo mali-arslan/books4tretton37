@@ -4,19 +4,28 @@ import JsoupWrappers.{JsoupFetcher, PageFetcher}
 import org.jsoup.nodes.Document
 
 import java.nio.file.{Files, Paths, StandardOpenOption}
-import scala.jdk.CollectionConverters.ListHasAsScala
+import scala.concurrent.duration.{Duration, MINUTES}
+import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.jdk.CollectionConverters.{CollectionHasAsScala, ListHasAsScala, SeqHasAsJava}
+import scala.util.{Failure, Success}
 
 /**
  *
- * @param baseUrl Root url to scrape from
+ * @param baseUrl    Root url to scrape from
  * @param outputPath root directory to save to
  */
 class PageScraper(baseUrl: String, outputPath: String) {
+  println(s"Scraping initialized for $baseUrl, into $outputPath")
   val domain = stripProtocol(baseUrl).split('/')(0)
   val baseURI = new java.net.URI(baseUrl)
 
   def scrape(logger: Logger = ConsoleLogger, fetcher: PageFetcher[Document] = JsoupFetcher): Unit = {
-    val visitedUrls = collection.mutable.Set.empty[String]
+    println(s"Scraping initialized for $baseUrl, into $outputPath")
+    val visitedUrls = collection.concurrent.TrieMap.empty[String, Unit]
+    // use TrieMap here as well?
+    val futures = new java.util.concurrent.ConcurrentLinkedQueue[(String, Future[Unit])]()
+    //collection.concurrent.TrieMap.empty[String, Future[Unit]]
+    implicit val ec = ExecutionContext.global
 
     def alreadyVisited(url: String): Boolean = {
       visitedUrls.contains(url) || visitedUrls.contains(url.stripSuffix("index.html"))
@@ -25,7 +34,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
     // recursive closure
     def _scrape(url: String): Unit = {
       logger.log(s"Processing $url")
-      visitedUrls += url
+      visitedUrls += (url -> ())
       val document =
         try {
           fetcher.fetchDocument(url)
@@ -48,7 +57,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
           List(el.attr("abs:href"), el.attr("abs:src"))
         )
         .distinct
-        .filter(r => r.nonEmpty && withinDomain(r))
+        .filter(r => r.nonEmpty && withinDomain(r) && !alreadyVisited(r))
 
       textResources.foreach { resourceUrl =>
         val resourceContent = fetcher.fetchDocument(url, true).outerHtml()
@@ -62,7 +71,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
       ).distinct
         .filter(r =>
           r.nonEmpty && !r.endsWith(".html") &&
-            withinDomain(r)
+            withinDomain(r) && !alreadyVisited(r)
         ).filterNot(textResources.contains)
 
       binaryResources.foreach { resourceUrl =>
@@ -71,14 +80,27 @@ class PageScraper(baseUrl: String, outputPath: String) {
           saveBinaryResource(resourceUrl, resourceContent)
       }
 
-      val links = document.select(s"a[href]").asScala.map(_.attr("abs:href")).distinct
-      links.filterNot(alreadyVisited).filter(withinDomain).foreach { link =>
-        _scrape(link)
-      }
+      val links = document.select(s"a[href]").asScala.map(_.attr("abs:href")).distinct.filterNot(alreadyVisited).filter(withinDomain).toList
+      //      links.filterNot(alreadyVisited).filter(withinDomain).foreach { link =>
+      //        _scrape(link)
+      //      }
+      futures.addAll(links.map { l => (l, Future {
+        _scrape(l)
+      })
+      }.asJava)
+      logger.log(s"Scraping completed for $url")
+
     }
 
     _scrape(baseUrl)
-
+    val futuresList = futures.asScala.toList
+    for ((url, future) <- futuresList) {
+      future.onComplete {
+        case Failure(exception) => logger.log(s"Scraping failed for $url, due to:\n{${exception.getMessage}}")
+        case Success(_) => ()
+      }
+    }
+    Await.ready(Future.sequence(futuresList.map(_._2)), Duration(100, MINUTES))
   }
 
   def saveBinaryResource(url: String, content: Array[Byte]): Unit = {
@@ -123,17 +145,20 @@ class PageScraper(baseUrl: String, outputPath: String) {
   }
 }
 
-object PageScraper extends App {
+object PageScraper {
   // app config via environment variables
   val outputPath = defaultedEnvVar("SCRAPER_OUTPUT_PATH", "tmp")
   val baseUrl = defaultedEnvVar("SCRAPER_TARGET_URL", "https://books.toscrape.com/")
 
   def defaultedEnvVar(varName: String, default: String): String = {
     val res = System.getenv(varName)
-    if (res.isEmpty) default else res
+    if (res == null) default else res
   }
 
   def apply(baseUrl: String = baseUrl, outputPath: String = outputPath): PageScraper =
+    new PageScraper(baseUrl, outputPath)
+
+  def apply(): PageScraper =
     new PageScraper(baseUrl, outputPath)
 
 }
