@@ -29,7 +29,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
       try
         _scrape(url)
       catch {
-        case e => failures.add(url -> e)
+        case e:Throwable => failures.add(url -> e)
       }
     }
 
