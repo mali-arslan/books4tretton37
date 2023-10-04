@@ -3,6 +3,7 @@ import Exceptions.FetchingException
 import JsoupWrappers.{JsoupFetcher, PageFetcher}
 import org.jsoup.nodes.Document
 
+import java.net.URL
 import java.nio.file.{Files, Paths, StandardOpenOption}
 import scala.collection.parallel.CollectionConverters.{ImmutableIterableIsParallelizable, IterableIsParallelizable}
 import scala.concurrent.ExecutionContext
@@ -43,17 +44,19 @@ class PageScraper(baseUrl: String, outputPath: String) {
     def _scrape(url: String): Unit = {
       logger.log(s"Processing $url")
       visitedUrls.putIfAbsent(url, ())
-      val document =
-        try {
-          fetcher.fetchDocument(url)
-        }
-        catch {
-          case e =>
-            throw new FetchingException(s"Error when fetching the url: $url", e)
-
-        }
+      val document = fetcher.fetchDocument(url)
       val outerHtml = document.outerHtml()
       saveHtmlContent(url, outerHtml)
+
+      // Extract links
+      val links = document.select(s"a[href]").asScala
+        .map(_.attr("abs:href"))
+        .distinct
+        .filterNot(alreadyVisited)
+        .filter(withinDomain)
+        .toList
+
+      visitedUrls.addAll(links.map(_ -> ()))
 
       // Extract and download textbased resources
 
@@ -86,15 +89,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
           saveBinaryResource(resourceUrl, resourceContent)
       }
 
-      val links = document.select(s"a[href]")
-        .asScala
-        .map(_.attr("abs:href"))
-        .distinct
-        .filterNot(alreadyVisited)
-        .filter(withinDomain)
-        .toList
 
-      visitedUrls.addAll(links.map(_ -> ()))
       println(s"Scraping complete for $url. Continuing with its links")
       links.par.foreach(_scrapeWithErrorTracking)
 

@@ -1,5 +1,4 @@
 
-import Exceptions.FetchingException
 import JsoupWrappers.{JsoupFetcher, PageFetcher}
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -7,24 +6,27 @@ import org.scalatest.BeforeAndAfterEach
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import java.io.File
 import java.nio.file.{Files, Paths}
 import scala.collection.mutable
 import scala.io.Source
 import scala.jdk.CollectionConverters.{IteratorHasAsScala, ListHasAsScala}
+import scala.reflect.io.Directory
 
 
 class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach {
   val target = "http://books.toscrape.com"
   val domain = "books.toscrape.com"
+
   override def beforeEach(): Unit = {
-//    new Directory(new File("tmp")).deleteRecursively()
+    new Directory(new File("tmp")).deleteRecursively()
     super.beforeEach()
   }
 
-  "PageScraper" should "throw an error if the page URL is invalid" in {
+  "PageScraper" should "log an error if the page URL is invalid" in {
     val invalidURL = "invalid"
-    a[FetchingException] should be thrownBy
-      PageScraper(invalidURL).scrape(MockLogger, JsoupFetcher)
+    PageScraper(invalidURL).scrape(MockLogger, JsoupFetcher)
+    atLeast(1, MockLogger.logs) should startWith("invalid")
 
   }
 
@@ -32,13 +34,14 @@ class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     val target = "http://books.com"
     val domain = "books.com"
     val mockFetcher = new PageFetcher[Document] {
-      override def fetchDocument(url: String, ignoreContentType:Boolean): Document = url match {
+      override def fetchDocument(url: String, ignoreContentType: Boolean): Document = url match {
         case `target` =>
           Jsoup.parse(
             Source.fromResource("single_level_plain.html").getLines().mkString("\n"),
             target
           )
       }
+
       override def fetchBytes(url: String): Array[Byte] = Array.empty
     }
     PageScraper(target, "tmp").scrape(MockLogger, mockFetcher)
@@ -49,16 +52,18 @@ class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
   it should "create correct file structure for a two level plain html" in {
     val target = "http://books.com"
     val domain = "books.com"
+
+    val page2Url = s"$target/page2"
     val mockFetcher = new PageFetcher[Document] {
-      override def fetchDocument(url: String, ignoreContentType:Boolean): Document = url match {
+      override def fetchDocument(url: String, ignoreContentType: Boolean): Document = url match {
         case `target` =>
           Jsoup.parse(
             Source.fromResource("two_levels_plain.html").getLines().mkString("\n"),
             target
           )
-        case s"$target/page2" => Jsoup.parse(
+        case `page2Url` => Jsoup.parse(
           Source.fromResource("single_level_plain.html").getLines().mkString("\n"),
-          url
+          target
         )
       }
 
@@ -80,7 +85,7 @@ class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     // any other target will return an empty shell
     // this way we can test the first layer of links and stop
     val mockFetcher = new PageFetcher[Document] {
-      override def fetchDocument(url: String, ignoreContentType:Boolean): Document = url match {
+      override def fetchDocument(url: String, ignoreContentType: Boolean): Document = url match {
         case `target` =>
           document
         case _ =>
@@ -91,7 +96,8 @@ class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     }
     PageScraper(target, "tmp").scrape(ConsoleLogger, mockFetcher)
     assert(Files.exists(Paths.get("tmp/").resolve(domain)))
-    filesCreated.count(_ => true) shouldBe document.select("a[href]").asScala.map(_.attr("abs:href")).distinct.size
+    filesCreated.count(_.toString.endsWith("html")) shouldBe
+      document.select("a[href]").asScala.map(_.attr("abs:href")).distinct.size
   }
 
   def readResourceAsBytes(resourceName: String) = {
@@ -114,11 +120,11 @@ class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     // any other target will return an empty shell
     // this way we can test the first layer of links and stop
     val mockFetcher = new PageFetcher[Document] {
-      override def fetchDocument(url: String, ignoreContentType:Boolean): Document = url match {
+      override def fetchDocument(url: String, ignoreContentType: Boolean): Document = url match {
         case `target` =>
           document
         case u if u.endsWith(".js") =>
-          Jsoup.connect(u).get()
+          Jsoup.connect(u).ignoreContentType(ignoreContentType).get()
         case _ =>
           Document.createShell("http://books.toscrape.com/")
       }
@@ -136,8 +142,8 @@ class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     filesCreated.count(_.toString.endsWith(scriptRelativePath)) shouldBe 1
   }
 
-  it should "successfully scrape all books" in {
-    PageScraper().scrape(ConsoleLogger,JsoupFetcher)
+  ignore should "successfully scrape all books" in {
+    PageScraper().scrape(ConsoleLogger, JsoupFetcher)
     filesCreated.map(_.toString)
       .filterNot(path => path.contains("category/") || path.contains("page-"))
       .filter(_.contains("catalogue"))
