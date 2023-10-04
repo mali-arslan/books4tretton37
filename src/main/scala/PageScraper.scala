@@ -1,9 +1,7 @@
 
-import Exceptions.FetchingException
 import JsoupWrappers.{JsoupFetcher, PageFetcher}
 import org.jsoup.nodes.Document
 
-import java.net.URL
 import java.nio.file.{Files, Paths, StandardOpenOption}
 import scala.collection.parallel.CollectionConverters.{ImmutableIterableIsParallelizable, IterableIsParallelizable}
 import scala.concurrent.ExecutionContext
@@ -20,18 +18,12 @@ class PageScraper(baseUrl: String, outputPath: String) {
   val baseURI = new java.net.URI(baseUrl)
 
   def scrape(logger: Logger = ConsoleLogger, fetcher: PageFetcher[Document] = JsoupFetcher): Unit = {
-    println(s"Scraping initialized for $baseUrl, into $outputPath")
+    logger.log(s"Scraping initialized for $baseUrl, into $outputPath")
     val visitedUrls = collection.concurrent.TrieMap.empty[String, Unit]
-    // use TrieMap here as well?
     val failures = new java.util.concurrent.ConcurrentLinkedQueue[(String, Throwable)]()
-    //collection.concurrent.TrieMap.empty[String, Future[Unit]]
-    implicit val ec = ExecutionContext.global
-
     def alreadyVisited(url: String): Boolean = {
       visitedUrls.contains(url) || visitedUrls.contains(url.stripSuffix("index.html"))
     }
-
-    // recursive closure
 
     def _scrapeWithErrorTracking(url: String): Unit = {
       try
@@ -41,6 +33,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
       }
     }
 
+    // recursive closure
     def _scrape(url: String): Unit = {
       logger.log(s"Processing $url")
       visitedUrls.putIfAbsent(url, ())
@@ -89,8 +82,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
           saveBinaryResource(resourceUrl, resourceContent)
       }
 
-
-      println(s"Scraping complete for $url. Continuing with its links")
+      logger.log(s"Scraping complete for $url. Continuing with its links")
       links.par.foreach(_scrapeWithErrorTracking)
 
     }
@@ -99,11 +91,16 @@ class PageScraper(baseUrl: String, outputPath: String) {
 
     val start = now
     _scrapeWithErrorTracking(baseUrl)
+    logger.log("\nScraping complete\n")
+    logger.log("-------SUMMARY---------")
     logger.log(s"Number of links scraped: ${visitedUrls.size}")
     logger.log(s"Time spent: ${Duration(now - start, MILLISECONDS).toSeconds}")
-    logger.log("List of scraping failures with reasons:")
-    failures.asScala.foreach {
-      case (u, t) => logger.log(s"$u - ${t.getMessage}")
+
+    if (!failures.isEmpty) {
+      logger.log("List of scraping failures with reasons:")
+      failures.asScala.foreach {
+        case (u, t) => logger.log(s"$u - ${t.getMessage}")
+      }
     }
   }
 
@@ -147,13 +144,8 @@ class PageScraper(baseUrl: String, outputPath: String) {
 
 object PageScraper {
   // app config via environment variables
-  val outputPath = defaultedEnvVar("SCRAPER_OUTPUT_PATH", "tmp")
-  val baseUrl = defaultedEnvVar("SCRAPER_TARGET_URL", "https://books.toscrape.com/")
-
-  def defaultedEnvVar(varName: String, default: String): String = {
-    val res = System.getenv(varName)
-    if (res == null) default else res
-  }
+  val outputPath = "tmp"
+  val baseUrl = "http://books.toscrape.com/"
 
   def apply(baseUrl: String = baseUrl, outputPath: String = outputPath): PageScraper =
     new PageScraper(baseUrl, outputPath)
