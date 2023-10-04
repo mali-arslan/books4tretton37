@@ -2,11 +2,11 @@
 
 This is a program that will recursively traverse each page in
 http://books.toscrape.com and save the contents, including images, scripts
-and other resources in a path that is passed as an argument to it.
+and other resources in a path that is passed as an argument to it. Once it completes you can browse the page from your local file system. 
 
 ## Installation
 
-Clone the repository: [git@github.com:mali-arslan/books4tretton37.git](git@github.com:mali-arslan/books4tretton37.git)
+- Clone this repository
 
 ### Alternative 1 (run jar file)
 
@@ -19,7 +19,7 @@ java -jar PageScraper-assembly-0.1.0-SNAPSHOT.jar <ouput path for scraping>
 ### Alternative 2
 
 - Install scala: https://www.scala-lang.org/download/
-- To run tests, n the root of the repo:
+- To run tests, in the root of the repo:
   ```bash
   sbt test
   ```
