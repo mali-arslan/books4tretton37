@@ -4,9 +4,10 @@ import JsoupWrappers.{JsoupFetcher, PageFetcher}
 import org.jsoup.nodes.Document
 
 import java.nio.file.{Files, Paths, StandardOpenOption}
-import scala.concurrent.duration.{Duration, MINUTES}
+import scala.collection.parallel.CollectionConverters.{ImmutableIterableIsParallelizable, IterableIsParallelizable}
+import scala.concurrent.duration.{Duration, MILLISECONDS, MINUTES}
 import scala.concurrent.{Await, ExecutionContext, Future}
-import scala.jdk.CollectionConverters.{CollectionHasAsScala, ListHasAsScala, SeqHasAsJava}
+import scala.jdk.CollectionConverters.{CollectionHasAsScala, ListHasAsScala, MapHasAsJava}
 import scala.util.{Failure, Success}
 
 /**
@@ -15,7 +16,6 @@ import scala.util.{Failure, Success}
  * @param outputPath root directory to save to
  */
 class PageScraper(baseUrl: String, outputPath: String) {
-  println(s"Scraping initialized for $baseUrl, into $outputPath")
   val domain = stripProtocol(baseUrl).split('/')(0)
   val baseURI = new java.net.URI(baseUrl)
 
@@ -23,7 +23,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
     println(s"Scraping initialized for $baseUrl, into $outputPath")
     val visitedUrls = collection.concurrent.TrieMap.empty[String, Unit]
     // use TrieMap here as well?
-    val futures = new java.util.concurrent.ConcurrentLinkedQueue[(String, Future[Unit])]()
+    val failures = new java.util.concurrent.ConcurrentLinkedQueue[(String, Throwable)]()
     //collection.concurrent.TrieMap.empty[String, Future[Unit]]
     implicit val ec = ExecutionContext.global
 
@@ -32,9 +32,10 @@ class PageScraper(baseUrl: String, outputPath: String) {
     }
 
     // recursive closure
+
     def _scrape(url: String): Unit = {
       logger.log(s"Processing $url")
-      visitedUrls += (url -> ())
+      visitedUrls.putIfAbsent(url, ())
       val document =
         try {
           fetcher.fetchDocument(url)
@@ -58,9 +59,9 @@ class PageScraper(baseUrl: String, outputPath: String) {
         )
         .distinct
         .filter(r => r.nonEmpty && withinDomain(r) && !alreadyVisited(r))
-
-      textResources.foreach { resourceUrl =>
-        val resourceContent = fetcher.fetchDocument(url, true).outerHtml()
+      visitedUrls.addAll(textResources.map(_ -> ()))
+      textResources.par.foreach { resourceUrl =>
+        val resourceContent = fetcher.fetchDocument(resourceUrl, true).html()
         if (resourceContent.nonEmpty)
           saveTextResource(resourceUrl, resourceContent)
       }
@@ -69,38 +70,33 @@ class PageScraper(baseUrl: String, outputPath: String) {
       val binaryResources = document.select("[href], [src]").asScala.flatMap(el =>
         List(el.attr("abs:href"), el.attr("abs:src"))
       ).distinct
-        .filter(r =>
-          r.nonEmpty && !r.endsWith(".html") &&
-            withinDomain(r) && !alreadyVisited(r)
+        .filter(r => r.nonEmpty && !r.endsWith(".html") && withinDomain(r) && !alreadyVisited(r)
         ).filterNot(textResources.contains)
-
-      binaryResources.foreach { resourceUrl =>
+      visitedUrls.addAll(binaryResources.map(_ -> ()))
+      binaryResources.par.foreach { resourceUrl =>
         val resourceContent = fetcher.fetchBytes(resourceUrl)
         if (resourceContent.nonEmpty)
           saveBinaryResource(resourceUrl, resourceContent)
       }
 
-      val links = document.select(s"a[href]").asScala.map(_.attr("abs:href")).distinct.filterNot(alreadyVisited).filter(withinDomain).toList
-      //      links.filterNot(alreadyVisited).filter(withinDomain).foreach { link =>
-      //        _scrape(link)
-      //      }
-      futures.addAll(links.map { l => (l, Future {
-        _scrape(l)
-      })
-      }.asJava)
-      logger.log(s"Scraping completed for $url")
+      val links = document.select(s"a[href]")
+        .asScala
+        .map(_.attr("abs:href"))
+        .distinct
+        .filterNot(alreadyVisited)
+        .filter(withinDomain)
+        .toList
+
+      visitedUrls.addAll(links.map(_ -> ()))
+      println(s"Scraping complete for $url. Continuing with its links")
+      links.par.foreach(_scrape)
 
     }
-
+    def now = System.currentTimeMillis()
+    val start = now
     _scrape(baseUrl)
-    val futuresList = futures.asScala.toList
-    for ((url, future) <- futuresList) {
-      future.onComplete {
-        case Failure(exception) => logger.log(s"Scraping failed for $url, due to:\n{${exception.getMessage}}")
-        case Success(_) => ()
-      }
-    }
-    Await.ready(Future.sequence(futuresList.map(_._2)), Duration(100, MINUTES))
+    println(visitedUrls.size)
+    println(Duration(now - start, MILLISECONDS).toSeconds)
   }
 
   def saveBinaryResource(url: String, content: Array[Byte]): Unit = {
@@ -128,7 +124,7 @@ class PageScraper(baseUrl: String, outputPath: String) {
   }
 
   private def getLocalPathHtml(absoluteUrl: String): String = {
-    val path = Paths.get(outputPath).resolve(cleanPath(stripProtocol(absoluteUrl))).toString
+    val path = Paths.get(outputPath).resolve(stripProtocol(absoluteUrl)).toString
     if (path.endsWith(".html")) path else path + "/index.html"
   }
 
@@ -136,12 +132,8 @@ class PageScraper(baseUrl: String, outputPath: String) {
     url.stripPrefix("http://").stripPrefix("https://")
   }
 
-  private def cleanPath(path: String) = {
-    path.replaceAll("[^a-zA-Z0-9.-/]", "_")
-  }
-
   private def getLocalPathResource(absoluteUrl: String): String = {
-    Paths.get(outputPath).resolve(cleanPath(stripProtocol(absoluteUrl))).toString
+    Paths.get(outputPath).resolve(stripProtocol(absoluteUrl)).toString
   }
 }
 

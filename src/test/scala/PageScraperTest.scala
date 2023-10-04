@@ -138,6 +138,10 @@ class PageScraperTest extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     filesCreated.count(_.toString.endsWith(scriptRelativePath)) shouldBe 1
   }
 
+  it should "scrape it all" in {
+    PageScraper().scrape(ConsoleLogger,JsoupFetcher)
+  }
+
   def filesCreated = Files.walk(Paths.get("tmp/").resolve(domain))
     .iterator()
     .asScala
